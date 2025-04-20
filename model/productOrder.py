@@ -2,8 +2,8 @@ from peewee import *
 from model.order import Order
 from model.product import Product
 
-db = SqliteDatabase('shop.db')
-
+from peewee import *
+from model.db import db
 class ProductOrder(Model):
     id = AutoField(primary_key=True)
     order = ForeignKeyField(Order, backref='product_orders')

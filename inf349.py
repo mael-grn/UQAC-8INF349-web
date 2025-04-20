@@ -10,8 +10,15 @@ from controller.orderUtils import calculate_total_price, calculate_total_price_t
 from controller.productUtils import load_products
 import re
 import peewee
-
+from model.db import db
 from model.transaction import Transaction
+from util.redis_client import redis_client
+import json
+from redis import Redis
+from rq import Queue
+import os
+from tasks import process_payment
+from cli import worker_command
 
 # Initialisation du logger
 logging.basicConfig(
@@ -26,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration de la base de données (ex: SQLite)
 DATABASE = "database.db"
-db = SqliteDatabase(DATABASE)
+
 
 # Fonction pour initialiser la base de données
 def init_db():
@@ -84,101 +91,63 @@ def is_valid_email(email):
 @app.post('/order')
 def create_order():
     logger.info("Création d'une commande")
-    # Récupération des données de la requête
     if not request.content_type or "application/json" not in request.content_type:
-        return {
-            "errors": {
-                "request": {
-                    "code": "invalid-content-type",
-                    "name": "Le Content-Type doit être application/json"
-                }
-            }
-        }, 400
-
-    for key, value in request.json.items():
-        if isinstance(value, str) and contains_xss(value):
-            return {
-                "errors": {
-                    "request": {
-                        "code": "xss-detected",
-                        "name": "Tentative d'injection XSS détectée"
-                    }
-                }
-            }, 400
+        return {"errors": {"request": {"code": "invalid-content-type", "name": "Le Content-Type doit être application/json"}}}, 400
 
     data = request.json
-    # Vérification de la présence des champs nécessaires, sinon erreur 422
-    if not data or 'product' not in data \
-            or 'id' not in data['product'] \
-            or 'quantity' not in data['product'] \
-            or data["product"]["quantity"] <= 0:
-        logger.error("La requête ne contient pas les champs nécessaires")
-        return {
-            "errors": {
-                "product" : {
-                    "code": "missing-fields",
-                    "name": "La création d'une commande nécessite un produit"
-                }
-            }
-        }, 422
-    try:
-        product_id = int(data["product"]["id"])  # 🔹 Convertir pour éviter l'injection SQL
-    except ValueError:
-        return {
-            "errors": {
-                "product": {
-                    "code": "invalid-product-id",
-                    "name": "L'ID du produit doit être un entier valide"
-                }
-            }
-        }, 400
-    product = Product.get_or_none(Product.id == data['product']['id'])
-    # Vérification de l'existence du produit, sinon erreur 404
-    if not product:
-        logger.error("Le produit demandé n'existe pas")
-        return {"error": "product-not-found"}, 404
-    if product.in_stock < data["product"]["quantity"]:
-        logger.error("La quantité demandée dépasse le stock disponible")
-        return {
-            "errors": {
-                "product": {
-                    "code": "excessive-quantity",
-                    "name": "La quantité demandée dépasse le stock disponible"
-                }
-            }
-        }, 422
-    # Vérification de la quantité en stock, sinon erreur 422
-    if product.in_stock <= 0:  # 🔹 Vérifie explicitement que le produit est hors stock
-        logger.error("Le produit demandé n'est pas en inventaire")
-        return {
-            "errors": {
-                "product": {
-                    "code": "out-of-inventory",
-                    "name": "Le produit demandé n'est pas en inventaire"
-                }
-            }
-        }, 422
 
-    if not product.in_stock:
-        logger.error("Le produit demandé n'est pas en inventaire")
-        return {
-            "errors" : {
-                "product": {
-                    "code": "out-of-inventory",
-                    "name": "Le produit demandé n'est pas en inventaire"
-                }
-            }
-        }, 422
-    # Création de la commande et du produit de la commande
+    # Support du format unique (ancien)
+    products_data = []
+    if 'product' in data:
+        products_data = [data['product']]
+    elif 'products' in data and isinstance(data['products'], list):
+        products_data = data['products']
+    else:
+        return {"errors": {"product": {"code": "missing-fields", "name": "Aucun produit fourni"}}}, 422
+
+    if not products_data:
+        return {"errors": {"product": {"code": "missing-fields", "name": "La liste de produits est vide"}}}, 422
+
+    # Création de la commande
     order = Order.create()
-    ProductOrder.create(quantity=data['product']['quantity'], order=order, product=Product.get_by_id(data['product']['id']))
 
-    logger.info(f"Commande {order.id} créée avec succès")
-    return {"order_link": f"/order/{order.id}"}, 302
+    for p in products_data:
+        try:
+            product_id = int(p["id"])
+            quantity = int(p["quantity"])
+        except (KeyError, ValueError):
+            return {"errors": {"product": {"code": "invalid-fields", "name": "Champs ID ou quantité manquants ou invalides"}}}, 422
+
+        product = Product.get_or_none(Product.id == product_id)
+        if not product:
+            return {"errors": {"product": {"code": "not-found", "name": f"Produit ID {product_id} introuvable"}}}, 404
+        if quantity <= 0 or product.in_stock < quantity:
+            return {"errors": {"product": {"code": "invalid-quantity", "name": "Quantité demandée invalide ou trop élevée"}}}, 422
+
+        ProductOrder.create(order=order, product=product, quantity=quantity)
+
+    logger.info(f"Commande {order.id} créée avec {len(products_data)} produits")
+    return {"order_link": f"/order/{order.id}"}, 201
+
 
 @app.get('/order/<int:order_id>')
 def get_order(order_id):
     logger.info(f"Récupération de la commande {order_id}")
+
+    cached = redis_client.get(f"order:{order_id}")
+    if not cached:
+        order = Order.select(Order, Transaction).join(Transaction, peewee.JOIN.LEFT_OUTER).where(Order.id == order_id).first()
+
+        if not order:
+            return {"error": "order-not-found"}, 404
+
+        # ✅ ICI : vérifie si le paiement est en cours
+        if order.paying and not order.paid:
+            return "", 202
+
+    if cached:
+        logger.info(f"Commande {order_id} chargée depuis Redis ✅")
+        return {"order": json.loads(cached)}, 200
 
     # Récupération de la commande
     order = Order.select(Order, Transaction).join(Transaction, peewee.JOIN.LEFT_OUTER).where(Order.id == order_id).first()
@@ -197,29 +166,40 @@ def get_order(order_id):
         logger.error("La commande est vide")
         return {"error": "order-empty"}, 404
 
-    # Si la commande a plus d'un seul produit
+    """# Si la commande a plus d'un seul produit
     if len(product_order) > 1:
         logger.error("La commande contient plusieurs produits")
-        return {"error": "multiple-products"}, 422
+        return {"error": "multiple-products"}, 422"""
 
     # Conversion en dictionnaire
     order_data = order.__data__
 
     # Ajout des propriétés manquantes
-    order_data["product"] = {
-        "id": product_order[0].product.id,
-        "quantity": product_order[0].quantity,
-    }
+    order_data["products"] = [
+        {
+            "id": po.product.id,
+            "quantity": po.quantity
+        }
+        for po in product_order
+    ]
     order_data["total_price"] = calculate_total_price(order)
     order_data['total_price_tax'] = calculate_total_price_tax(order)
     order_data['shipping_price'] = calculate_shipping_price(order)
     order_data['shipping_information'] = order.shipping_information.__data__ if order.shipping_information else {}
-    if order.transaction :
-        order_data["transaction"] = {
+    if order.transaction:
+        transaction_data = {
             "id": order.transaction.id,
             "success": order.transaction.success,
             "amount": order.transaction.amount
         }
+
+        if not order.transaction.success:
+            transaction_data["error"] = {
+                "code": getattr(order.transaction, "error_code", "card-declined"),
+                "name": getattr(order.transaction, "error_message", "La carte de crédit a été déclinée.")
+            }
+
+        order_data["transaction"] = transaction_data
 
     logger.info(f"Commande {order_id} récupérée avec succès")
     if not order.transaction:
@@ -304,27 +284,51 @@ def update_order(order_id):
                 }
             }, e.code
 
+
     elif "credit_card" in data and not "order" in data:
-        print(f"DEBUG: Raison du 422 - {order.__data__}")
-        logger.info(f"Mise à jour de la carte de crédit de la commande {order_id}")
 
-        # Mise à jour des données
-        try:
-            update_order_payment(order, data)
-            # Retourne la commande complète
-            logger.info(f"Commande {order_id} mise à jour avec succès")
-            return get_order(order.id)
-
-        except RequestError as e:
-            logger.error(f"Erreur lors de la mise à jour de la commande {order_id}")
+        if order.paid:
             return {
+
                 "errors": {
+
                     "order": {
-                        "code": str(e),
-                        "name": e.details
+
+                        "code": "already-paid",
+
+                        "name": "La commande est déjà payée"
+
                     }
+
                 }
-            }, e.code
+
+            }, 400
+
+        if order.paying:
+            return {
+
+                "errors": {
+
+                    "order": {
+
+                        "code": "payment-in-progress",
+
+                        "name": "Le paiement est déjà en cours"
+
+                    }
+
+                }
+
+            }, 409
+        redis_conn = Redis.from_url(os.environ.get("REDIS_URL", "redis://redis:6379"))
+        task_queue = Queue(connection=redis_conn)
+
+        order.paying = True
+        order.save()
+
+        task_queue.enqueue(process_payment, order.id, data["credit_card"])
+        print(f"🌀 Tâche de paiement enfilée pour commande {order.id}")
+        return "", 202
     else:
         print(f"DEBUG: Raison du 422 - {order.__data__}")
         logger.error("La requête ne contient pas les champs nécessaires")
@@ -338,4 +342,5 @@ def update_order(order_id):
         }, 422
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, host="0.0.0.0")
+app.cli.add_command(worker_command)

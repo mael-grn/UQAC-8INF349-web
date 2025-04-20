@@ -1,3 +1,4 @@
+import uuid
 
 from model.creditCard import CreditCard
 from model.productOrder import ProductOrder
@@ -6,6 +7,11 @@ from model.transaction import Transaction
 from controller.creditCardUtils import check_credit_card_entity_complete, \
     send_card_data_distant_payment
 from controller.shippingInfoUtils import create_shipping_info_entity_or_none
+import json
+from util.redis_client import redis_client
+from model.transaction import Transaction
+from model.creditCard import CreditCard
+from model.requestError import RequestError
 
 TAXE_RATE = {
     "QC": 0.15,
@@ -81,31 +87,71 @@ def update_order_shipping_and_email(order, data):
 def update_order_payment(order, data):
     # Verification des champs necessaires
     check_ready_for_payment(order)
-
-    # Vérification de la présence des champs nécessaires pour la carte de crédit, sinon erreur 422
     check_credit_card_entity_complete(data.get("credit_card", {}))
 
-    # Vérification de la validité de la carte de crédit
-    res = send_card_data_distant_payment(data["credit_card"], calculate_total_price_tax(order) + calculate_shipping_price(order))
-    # Création de la carte de crédit et de la transaction
-    credit_card = CreditCard.create(
-        name=res["credit_card"]["name"],
-        first_digits=res["credit_card"]["first_digits"],
-        last_digits=res["credit_card"]["last_digits"],
-        expiration_year=res["credit_card"]["expiration_year"],
-        expiration_month=res["credit_card"]["expiration_month"],
-        cvv=res["credit_card"].get("cvv", "000")
-    )
+    try:
+        res = send_card_data_distant_payment(
+            data["credit_card"],
+            calculate_total_price_tax(order) + calculate_shipping_price(order)
+        )
 
-    transaction = Transaction.create(
-        id=res["transaction"]["id"],
-        success=res["transaction"]["success"] == "true",
-        amount=res["transaction"]["amount_charged"]
-    )
-    # Mise à jour de la commande
-    order.credit_card = credit_card
-    order.transaction = transaction
-    order.paid = True
+        credit_card = CreditCard.create(
+            name=res["credit_card"]["name"],
+            first_digits=res["credit_card"]["first_digits"],
+            last_digits=res["credit_card"]["last_digits"],
+            expiration_year=res["credit_card"]["expiration_year"],
+            expiration_month=res["credit_card"]["expiration_month"],
+            cvv=res["credit_card"].get("cvv", "000")
+        )
 
-    # Sauvegarde de la commande
-    order.save()
+        transaction = Transaction.create(
+            id=res["transaction"]["id"],
+            success=True,
+            amount=res["transaction"]["amount_charged"]
+        )
+
+        order.credit_card = credit_card
+        order.transaction = transaction
+        order.paid = True
+        order.save()
+
+    except RequestError as e:
+        # 💥 En cas d'erreur de paiement retournée par le service externe
+        transaction = Transaction.create(
+            id=str(uuid.uuid4()),
+            success=False,
+            amount=calculate_total_price_tax(order) + calculate_shipping_price(order),
+            error_code=e.code,
+            error_message=e.details
+        )
+
+        order.transaction = transaction
+        order.paid = False
+        order.save()
+
+    # 🔁 Caching de la commande dans Redis
+    cached_order = serialize_order(order)
+    redis_client.set(f"order:{order.id}", json.dumps(cached_order))
+
+
+def serialize_order(order):
+    from model.productOrder import ProductOrder
+    from controller.orderUtils import calculate_total_price, calculate_shipping_price
+
+    product_orders = ProductOrder.select().where(ProductOrder.order == order)
+    return {
+        "id": order.id,
+        "email": order.email,
+        "paid": order.paid,
+        "total_price": calculate_total_price(order),
+        "shipping_price": calculate_shipping_price(order),
+        "credit_card": order.credit_card.__data__ if order.credit_card else {},
+        "shipping_information": order.shipping_information.__data__ if order.shipping_information else {},
+        "transaction": order.transaction.__data__ if order.transaction else {},
+        "products": [
+            {"id": po.product.id, "quantity": po.quantity}
+            for po in product_orders
+        ]
+    }
+
+# 🔽 à la fin de update_order_payment()

@@ -1,6 +1,7 @@
 from peewee import *
 
-db = SqliteDatabase('shop.db')
+from peewee import *
+from model.db import db
 
 class ShippingInfo(Model):
     id = AutoField(primary_key=True)

@@ -3,43 +3,46 @@ from model.product import Product
 
 SOURCE_URL = "https://dimensweb.uqac.ca/~jgnault/shops/products/"
 
-def get_products_from_source():
-    # Chargement des données
-    res = requests.get(SOURCE_URL)
+def sanitize(text):
+    if isinstance(text, str):
+        return text.replace('\x00', '')
+    return text
 
-    # Vérification de la réponse
+def get_products_from_source():
+    res = requests.get(SOURCE_URL)
     if res.status_code != 200:
-        # La réponse n'est pas 200.
         raise f"Erreur lors de la récupération des données : code : {res.status_code} - message : {res.text}"
-    else:
-        # Récupération des données dans la réponse
-        res_json = res.json()
-        if res_json is None or res_json['products'] is None:
-            # Les données sont invalides.
-            raise "Erreur lors de la récupération des données : données invalides"
-        else:
-            # Réussite
-            return res_json['products']
+    res_json = res.json()
+    if res_json is None or res_json.get('products') is None:
+        raise "Erreur lors de la récupération des données : données invalides"
+    return res_json['products']
 
 def upsert_product_from_json(json):
-    # Test d'insertion de produit
-    product, created = Product.get_or_create(id=json['id'], defaults=json)
+    try:
+        product, created = Product.get_or_create(
+            id=json['id'],
+            defaults={
+                "name": sanitize(json["name"]),
+                "in_stock": json["in_stock"],
+                "description": sanitize(json["description"]),
+                "price": json["price"],
+                "weight": json["weight"],
+                "image": sanitize(json["image"]),
+            }
+        )
 
-    # Si le produit n'a pas été inséré, alors il existe déjà et on le met à jour
-    if not created:
-        # Mise à jour des données
-        product.name = json['name']
-        product.in_stock = json['in_stock']
-        product.description = json['description']
-        product.price = json['price']
-        product.weight = json['weight']
-        product.image = json['image']
-        product.save()
+        if not created:
+            product.name = sanitize(json['name'])
+            product.in_stock = json['in_stock']
+            product.description = sanitize(json['description'])
+            product.price = json['price']
+            product.weight = json['weight']
+            product.image = sanitize(json['image'])
+            product.save()
+    except Exception as e:
+        print(f"⚠️ Erreur avec le produit ID={json.get('id')} : {e}")
 
 def load_products():
-    # Récupération des produits
     products_json = get_products_from_source()
-
-    # Insertion des produits
     for product_json in products_json:
         upsert_product_from_json(product_json)
