@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Créer une Commande</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; }
+        h1 { text-align: center; }
+        #order-form { margin-top: 20px; border: 1px solid #ccc; padding: 15px; border-radius: 5px; }
+        .product-item { margin-bottom: 10px; display: flex; align-items: center; }
+        .product-item label { margin-right: 10px; }
+        .product-item select { padding: 8px; border-radius: 3px; border: 1px solid #ddd; margin-right: 10px; }
+        .product-item input[type="number"] { width: 80px; padding: 8px; border-radius: 3px; border: 1px solid #ddd; }
+        #add-product-btn { padding: 8px 15px; background-color: #28a745; color: white; border: none; border-radius: 3px; cursor: pointer; margin-top: 10px; }
+        #submit-order-btn { padding: 10px 20px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; margin-top: 20px; }
+        .error { color: red; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>Créer une Commande</h1>
+
+    <form id="order-form" action="/order" method="post">
+        <div id="products-container">
+            </div>
+        <button type="button" id="add-product-btn">Ajouter un Produit</button>
+        <button type="submit" id="submit-order-btn">Créer la Commande</button>
+    </form>
+
+    <script>
+        const productsData = {{ products | tojson }};
+        const productsContainer = document.getElementById('products-container');
+        const addProductBtn = document.getElementById('add-product-btn');
+        let productCounter = 0;
+
+        function addProductRow() {
+            const productDiv = document.createElement('div');
+            productDiv.classList.add('product-item');
+            productDiv.innerHTML = `
+                <label for="product_${productCounter}">Produit:</label>
+                <select name="products[${productCounter}][id]" id="product_${productCounter}">
+                    <option value="">Sélectionner un produit</option>
+                    ${productsData.map(product => `<option value="${product.id}">${product.name}</option>`).join('')}
+                </select>
+                <label for="quantity_${productCounter}">Quantité:</label>
+                <input type="number" name="products[${productCounter}][quantity]" id="quantity_${productCounter}" value="1" min="1">
+            `;
+            productsContainer.appendChild(productDiv);
+            productCounter++;
+        }
+
+        addProductBtn.addEventListener('click', addProductRow);
+
+        addProductRow();
+    </script>
+
+    {% if error %}
+    <p class="error">Erreur: {{ error }}</p>
+    {% endif %}
+</body>
+</html>

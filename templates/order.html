@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Détails de la Commande {{ order.id }}</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; }
+        h1 { text-align: center; }
+        .order-details { border: 1px solid #ccc; padding: 15px; border-radius: 5px; margin-top: 20px; }
+        .order-info p { margin-bottom: 8px; }
+        .product-list { margin-top: 15px; border-top: 1px solid #eee; padding-top: 15px; }
+        .product-item { margin-bottom: 10px; }
+        .total-price { font-weight: bold; margin-top: 15px; }
+        .transaction-info { margin-top: 15px; border-top: 1px solid #eee; padding-top: 15px; }
+        .transaction-success { color: green; font-weight: bold; }
+        .transaction-error { color: red; font-weight: bold; }
+        .error { color: red; font-weight: bold; margin-top: 10px; }
+        .back-link { display: block; margin-top: 20px; color: #007bff; text-decoration: none; }
+        .update-form, .delete-form { margin-top: 20px; border: 1px solid #ddd; padding: 15px; border-radius: 5px; }
+        .update-form label { display: block; margin-bottom: 5px; }
+        .update-form input[type="text"], .update-form input[type="email"] { width: 100%; padding: 8px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 3px; box-sizing: border-box; }
+        .update-form button, .delete-form button { padding: 10px 15px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; margin-top: 10px; }
+        .delete-form button { background-color: #dc3545; }
+        #update-message, #delete-message { margin-top: 10px; font-weight: bold; }
+        #update-error, #delete-error { color: red; font-weight: bold; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Détails de la Commande {{ order.id }}</h1>
+
+    {% if order %}
+    <div class="order-details">
+        <div class="order-info">
+            <p><strong>ID de la commande:</strong> {{ order.id }}</p>
+            <p><strong>Date de création:</strong> {{ order.created_at }}</p>
+            {% if order.shipping_information %}
+            <p><strong>Adresse de livraison:</strong> {{ order.shipping_information.address }}, {{ order.shipping_information.city }}, {{ order.shipping_information.postal_code }}, {{ order.shipping_information.country }}</p>
+            <p><strong>Email:</strong> {{ order.email }}</p>
+            {% else %}
+            <p><strong>Informations de livraison:</strong> Non fournies</p>
+            {% endif %}
+        </div>
+
+        <div class="product-list">
+            <h3>Produits dans la commande:</h3>
+            {% if order.products %}
+            <ul>
+                {% for product in order.products %}
+                <li class="product-item">ID: {{ product.id }}, Quantité: {{ product.quantity }}</li>
+                {% endfor %}
+            </ul>
+            <p class="total-price"><strong>Prix total (HT):</strong> {{ order.total_price }} $</p>
+            <p class="total-price"><strong>Prix total (TTC):</strong> {{ order.total_price_tax }} $</p>
+            <p><strong>Frais de livraison:</strong> {{ order.shipping_price }} $</p>
+            {% else %}
+            <p>Aucun produit dans cette commande.</p>
+            {% endif %}
+        </div>
+
+        {% if order.transaction %}
+        <div class="transaction-info">
+            <h3>Informations de la transaction:</h3>
+            <p><strong>ID de la transaction:</strong> {{ order.transaction.id }}</p>
+            <p><strong>Montant:</strong> {{ order.transaction.amount }} $</p>
+            <p><strong>Statut:</strong> {% if order.transaction.success %}<span class="transaction-success">Succès</span>{% else %}<span class="transaction-error">Échec</span>{% endif %}</p>
+            {% if not order.transaction.success and order.transaction.error %}
+            <p class="transaction-error"><strong>Erreur:</strong> {{ order.transaction.error.name }} ({{ order.transaction.error.code }})</p>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="update-form">
+        <h3>Mettre à jour les informations de livraison et l'e-mail</h3>
+        <form id="update-order-form">
+            <label for="shipping_address">Adresse de livraison:</label>
+            <input type="text" id="shipping_address" name="shipping_address">
+
+            <label for="shipping_city">Ville:</label>
+            <input type="text" id="shipping_city" name="shipping_city">
+
+            <label for="shipping_postal_code">Code postal:</label>
+            <input type="text" id="shipping_postal_code" name="shipping_postal_code">
+
+            <label for="shipping_country">Pays:</label>
+            <input type="text" id="shipping_country" name="shipping_country">
+
+            <label for="email">Email:</label>
+            <input type="email" id="email" name="email">
+
+            <button type="button" onclick="updateOrder({{ order.id }})">Mettre à jour la commande</button>
+        </form>
+        <div id="update-message"></div>
+        <div id="update-error"></div>
+    </div>
+
+    <div class="delete-form">
+        <h3>Supprimer la commande</h3>
+        <form id="delete-order-form">
+            <button type="button" onclick="deleteOrder({{ order.id }})">Supprimer la commande</button>
+        </form>
+        <div id="delete-message"></div>
+        <div id="delete-error"></div>
+    </div>
+
+    {% else %}
+    <p class="error">Commande non trouvée.</p>
+    {% endif %}
+
+    <a href="/" class="back-link">Retour à la liste des produits</a>
+
+    <script>
+        function updateOrder(orderId) {
+            const form = document.getElementById('update-order-form');
+            const formData = new FormData(form);
+            const data = {};
+            formData.forEach((value, key) => data[key] = value);
+
+            fetch(`/order/${orderId}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: new URLSearchParams(data), 
+            })
+            .then(response => {
+                const updateMessageDiv = document.getElementById('update-message');
+                const updateErrorDiv = document.getElementById('update-error');
+                updateMessageDiv.textContent = '';
+                updateErrorDiv.textContent = '';
+                if (response.ok) {
+                    return response.json();
+                } else {
+                    return response.json().then(errorData => {
+                        throw new Error(errorData.error || 'Erreur lors de la mise à jour de la commande.');
+                    });
+                }
+            })
+            .then(data => {
+                document.getElementById('update-message').textContent = data.message || 'Commande mise à jour avec succès.';
+                window.location.reload();
+            })
+            .catch(error => {
+                document.getElementById('update-error').textContent = error.message;
+            });
+        }
+
+        function deleteOrder(orderId) {
+            if (confirm('Êtes-vous sûr de vouloir supprimer cette commande ?')) {
+                fetch(`/order/${orderId}`, {
+                    method: 'DELETE',
+                })
+                .then(response => {
+                    const deleteMessageDiv = document.getElementById('delete-message');
+                    const deleteErrorDiv = document.getElementById('delete-error');
+                    deleteMessageDiv.textContent = '';
+                    deleteErrorDiv.textContent = '';
+                    if (response.ok) {
+                        if (response.status === 204) {
+                            deleteMessageDiv.textContent = 'Commande supprimée avec succès.';
+                            window.location.href = '/';
+                        } else {
+                            return response.json().then(errorData => {
+                                throw new Error(errorData.error || 'Erreur lors de la suppression de la commande.');
+                            });
+                        }
+                    } else {
+                        return response.json().then(errorData => {
+                            throw new Error(errorData.error || 'Erreur lors de la suppression de la commande.');
+                        });
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('delete-error').textContent = error.message;
+                });
+            }
+        }
+    </script>
+</body>
+</html>

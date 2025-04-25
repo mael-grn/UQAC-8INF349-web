@@ -45,16 +45,25 @@ def calculate_total_price_tax(order):
 
 
 def calculate_shipping_price(order):
-    # Calcul du poids total
-    total_weight = sum(po.product.weight * po.quantity for po in ProductOrder.select().where(ProductOrder.order == order))
+    """Calcule les frais de livraison en fonction du poids total de la commande."""
+    total_weight = 0
+    product_orders = ProductOrder.select().where(ProductOrder.order == order)
+    for po in product_orders:
+        total_weight += po.product.weight * po.quantity
 
-    # Calcul du prix de la livraison
     if total_weight <= 500:
         return 5
     elif total_weight <= 2000:
         return 10
     else:
         return 25
+    
+def calculate_total_price_tax(order):
+    """Calcule le prix total avec taxes selon la province."""
+    total_ht = calculate_total_price(order)
+    if order and order.shipping_information and order.shipping_information.province in TAXE_RATE:
+        return total_ht * (1 + TAXE_RATE[order.shipping_information.province])
+    return total_ht
 
 def check_ready_for_payment(order):
 
